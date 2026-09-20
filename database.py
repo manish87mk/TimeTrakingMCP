@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 #DB_PATH = Path(__file__).parent / "timetrack.db"
-Path("/tmp/timetrack.db")
+DB_PATH = Path("/tmp/timetrack.db")
 
 
 def get_connection():
