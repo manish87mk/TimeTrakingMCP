@@ -24,6 +24,7 @@ from fastmcp import FastMCP
 import database as db
 
 # ---------- persistence, initialized once at startup ----------
+#change
 db.init_db()
 
 # ---------- Step 1: build the MCP server FIRST ----------
