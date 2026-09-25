@@ -140,7 +140,7 @@ async def init_db():
             await connection.commit()
 
     finally:
-        cursor.close()
+        await cursor.close()
         connection.close()
 
 

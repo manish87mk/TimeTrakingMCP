@@ -22,11 +22,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from fastmcp import FastMCP
 
-import database_old as db
+import database as db
 
 # ---------- persistence, initialized once at startup ----------
 #change
-await db.init_db()
+#await db.init_db()
 
 # ---------- Step 1: build the MCP server FIRST ----------
 # Hand-curated tools, calling the SAME database functions the REST API
