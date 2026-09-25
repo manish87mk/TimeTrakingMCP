@@ -1,126 +1,422 @@
 """
-TimeTrack's persistence layer -- SQLite, shared by the website and the MCP
-server, exactly like RecipeBox's was. One real, professional use case this
-time: logging billable hours against projects, and summarizing them.
+TimeTrack persistence layer.
+
+Async MySQL database hosted on Filess.io.
+
+Both the FastAPI REST API and MCP server use these
+same database functions.
 """
-import sqlite3
+
+import os
 from pathlib import Path
 
-#DB_PATH = Path(__file__).parent / "timetrack.db"
-DB_PATH = Path("/tmp/timetrack.db")
+import aiomysql
+from dotenv import load_dotenv
+
+# Load .env from the project root
+# BASE_DIR = Path(__file__).resolve().parent
+# load_dotenv(BASE_DIR / ".env")
+
+load_dotenv()
 
 
-def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# ---------------------------------------------------------
+# Database configuration
+# ---------------------------------------------------------
+
+MYSQL_HOST = os.getenv("MYSQL_HOST")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3307"))
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
+MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 
 
-def init_db():
-    conn = get_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS time_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            employee_name TEXT NOT NULL,
-            project TEXT NOT NULL,
-            entry_date TEXT NOT NULL,
-            hours REAL NOT NULL,
-            description TEXT NOT NULL DEFAULT ''
+# ---------------------------------------------------------
+# Get async MySQL connection
+# ---------------------------------------------------------
+
+async def get_connection():
+   
+    return await aiomysql.connect(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        db=MYSQL_DATABASE,
+        cursorclass=aiomysql.DictCursor,
+        autocommit=False,
+    )
+
+
+# ---------------------------------------------------------
+# Initialize database
+# ---------------------------------------------------------
+
+async def init_db():
+
+    connection = await get_connection()
+
+    try:
+        cursor = await connection.cursor(aiomysql.DictCursor)
+
+        await cursor.execute("""
+            CREATE TABLE IF NOT EXISTS time_entries (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                employee_name VARCHAR(255) NOT NULL,
+                project VARCHAR(255) NOT NULL,
+                entry_date DATE NOT NULL,
+                hours DOUBLE NOT NULL,
+                description TEXT NOT NULL
+            )
+        """)
+
+        await connection.commit()
+
+        # Check if table already contains data
+        await cursor.execute(
+            "SELECT COUNT(*) AS count FROM time_entries"
         )
-    """)
-    count = conn.execute("SELECT COUNT(*) FROM time_entries").fetchone()[0]
-    if count == 0:
-        seed = [
-            ("Asha Patel", "Website Redesign", "2026-09-08", 6.5, "Homepage layout"),
-            ("Asha Patel", "Website Redesign", "2026-09-09", 7.0, "Mobile responsive fixes"),
-            ("Asha Patel", "Client Onboarding", "2026-09-10", 3.0, "Kickoff call + notes"),
-            ("Rahul Mehta", "Website Redesign", "2026-09-08", 5.5, "API integration"),
-            ("Rahul Mehta", "Internal Tools", "2026-09-09", 8.0, "Dashboard bug fixes"),
-        ]
-        conn.executemany(
-            "INSERT INTO time_entries (employee_name, project, entry_date, hours, description) "
-            "VALUES (?, ?, ?, ?, ?)",
-            seed,
-        )
-        conn.commit()
-    conn.close()
 
+        result = await cursor.fetchone()
+
+        count = result["count"]
+
+        # Seed initial data
+        if count == 0:
+
+            seed = [
+                (
+                    "Asha Patel",
+                    "Website Redesign",
+                    "2026-09-08",
+                    6.5,
+                    "Homepage layout",
+                ),
+                (
+                    "Asha Patel",
+                    "Website Redesign",
+                    "2026-09-09",
+                    7.0,
+                    "Mobile responsive fixes",
+                ),
+                (
+                    "Asha Patel",
+                    "Client Onboarding",
+                    "2026-09-10",
+                    3.0,
+                    "Kickoff call + notes",
+                ),
+                (
+                    "Rahul Mehta",
+                    "Website Redesign",
+                    "2026-09-08",
+                    5.5,
+                    "API integration",
+                ),
+                (
+                    "Rahul Mehta",
+                    "Internal Tools",
+                    "2026-09-09",
+                    8.0,
+                    "Dashboard bug fixes",
+                ),
+            ]
+
+            await cursor.executemany(
+                """
+                INSERT INTO time_entries
+                (
+                    employee_name,
+                    project,
+                    entry_date,
+                    hours,
+                    description
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                seed,
+            )
+
+            await connection.commit()
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# ---------------------------------------------------------
+# Convert database row to dictionary
+# ---------------------------------------------------------
 
 def _row_to_dict(row) -> dict:
+
     return {
         "id": row["id"],
         "employee_name": row["employee_name"],
         "project": row["project"],
-        "entry_date": row["entry_date"],
-        "hours": row["hours"],
+        "entry_date": str(row["entry_date"]),
+        "hours": float(row["hours"]),
         "description": row["description"],
     }
 
 
-def list_all_entries() -> list[dict]:
-    conn = get_connection()
-    rows = conn.execute("SELECT * FROM time_entries ORDER BY entry_date DESC, id DESC").fetchall()
-    conn.close()
-    return [_row_to_dict(r) for r in rows]
+# ---------------------------------------------------------
+# List all entries
+# ---------------------------------------------------------
+
+async def list_all_entries() -> list[dict]:
+
+    connection = await get_connection()
+
+    try:
+
+        cursor = await connection.cursor(aiomysql.DictCursor)
+
+        await cursor.execute("""
+            SELECT *
+            FROM time_entries
+            ORDER BY entry_date DESC, id DESC
+        """)
+
+        rows = await cursor.fetchall()
+
+        return [_row_to_dict(row) for row in rows]
+
+    finally:
+
+        cursor.close()
+        connection.close()
 
 
-def log_time(employee_name: str, project: str, entry_date: str, hours: float, description: str = "") -> dict:
+# ---------------------------------------------------------
+# Log time
+# ---------------------------------------------------------
+
+async def log_time(
+    employee_name: str,
+    project: str,
+    entry_date: str,
+    hours: float,
+    description: str = "",
+) -> dict:
+
     if hours <= 0:
         raise ValueError("hours must be a positive number")
-    conn = get_connection()
-    cursor = conn.execute(
-        "INSERT INTO time_entries (employee_name, project, entry_date, hours, description) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (employee_name, project, entry_date, hours, description),
-    )
-    conn.commit()
-    new_id = cursor.lastrowid
-    row = conn.execute("SELECT * FROM time_entries WHERE id = ?", (new_id,)).fetchone()
-    conn.close()
-    return _row_to_dict(row)
+
+    connection = await get_connection()
+
+    try:
+
+        cursor = await connection.cursor(aiomysql.DictCursor)
+
+        await cursor.execute(
+            """
+            INSERT INTO time_entries
+            (
+                employee_name,
+                project,
+                entry_date,
+                hours,
+                description
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                employee_name,
+                project,
+                entry_date,
+                hours,
+                description,
+            ),
+        )
+
+        await connection.commit()
+
+        new_id = cursor.lastrowid
+
+        await cursor.execute(
+            """
+            SELECT *
+            FROM time_entries
+            WHERE id = %s
+            """,
+            (new_id,),
+        )
+
+        row = await cursor.fetchone()
+
+        return _row_to_dict(row)
+
+    except Exception:
+
+        await connection.rollback()
+        raise
+
+    finally:
+
+        cursor.close()
+        connection.close()
 
 
-def get_timesheet(employee_name: str, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
-    conn = get_connection()
-    query = "SELECT * FROM time_entries WHERE employee_name = ?"
-    params: list = [employee_name]
-    if start_date:
-        query += " AND entry_date >= ?"
-        params.append(start_date)
-    if end_date:
-        query += " AND entry_date <= ?"
-        params.append(end_date)
-    query += " ORDER BY entry_date"
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [_row_to_dict(r) for r in rows]
+# ---------------------------------------------------------
+# Get employee timesheet
+# ---------------------------------------------------------
 
-def execute_query(query: str, params: list = []) -> list[dict]:
-    conn = get_connection()
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [_row_to_dict(r) for r in rows]
+async def get_timesheet(
+    employee_name: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
 
-def list_projects() -> list[str]:
-    conn = get_connection()
-    rows = conn.execute("SELECT DISTINCT project FROM time_entries ORDER BY project").fetchall()
-    conn.close()
-    return [r["project"] for r in rows]
+    connection = await get_connection()
+
+    try:
+
+        cursor = await connection.cursor(aiomysql.DictCursor)
+
+        query = """
+            SELECT *
+            FROM time_entries
+            WHERE employee_name = %s
+        """
+
+        params = [employee_name]
+
+        if start_date:
+
+            query += " AND entry_date >= %s"
+            params.append(start_date)
+
+        if end_date:
+
+            query += " AND entry_date <= %s"
+            params.append(end_date)
+
+        query += " ORDER BY entry_date"
+
+        await cursor.execute(query, params)
+
+        rows = await cursor.fetchall()
+
+        return [_row_to_dict(row) for row in rows]
+
+    finally:
+
+        cursor.close()
+        connection.close()
 
 
-def get_project_summary(project: str) -> dict:
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT employee_name, SUM(hours) as total_hours FROM time_entries "
-        "WHERE project = ? GROUP BY employee_name ORDER BY employee_name",
-        (project,),
-    ).fetchall()
-    conn.close()
-    if not rows:
-        raise ValueError(f"No time logged against project '{project}'")
-    by_employee = {r["employee_name"]: r["total_hours"] for r in rows}
-    return {
-        "project": project,
-        "total_hours": sum(by_employee.values()),
-        "by_employee": by_employee,
-    }
+# ---------------------------------------------------------
+# Execute SELECT query
+# ---------------------------------------------------------
+
+async def execute_query(
+    query: str,
+    params: list | None = None,
+) -> list[dict]:
+
+    connection = await get_connection()
+
+    try:
+
+        cursor = await connection.cursor(aiomysql.DictCursor)
+
+        await cursor.execute(
+            query,
+            params or [],
+        )
+
+        rows = await cursor.fetchall()
+
+        return [_row_to_dict(row) for row in rows]
+
+    finally:
+
+        cursor.close()
+        connection.close()
+
+
+# ---------------------------------------------------------
+# List projects
+# ---------------------------------------------------------
+
+async def list_projects() -> list[str]:
+
+    connection = await get_connection()
+
+    try:
+
+        cursor = await connection.cursor(aiomysql.DictCursor)
+
+        await cursor.execute("""
+            SELECT DISTINCT project
+            FROM time_entries
+            ORDER BY project
+        """)
+
+        rows = await cursor.fetchall()
+
+        return [
+            row["project"]
+            for row in rows
+        ]
+
+    finally:
+
+        cursor.close()
+        connection.close()
+
+
+# ---------------------------------------------------------
+# Project summary
+# ---------------------------------------------------------
+
+async def get_project_summary(
+    project: str,
+) -> dict:
+
+    connection = await get_connection()
+
+    try:
+
+        cursor = await connection.cursor(aiomysql.DictCursor)
+
+        await cursor.execute(
+            """
+            SELECT
+                employee_name,
+                SUM(hours) AS total_hours
+            FROM time_entries
+            WHERE project = %s
+            GROUP BY employee_name
+            ORDER BY employee_name
+            """,
+            (project,),
+        )
+
+        rows = await cursor.fetchall()
+
+        if not rows:
+
+            raise ValueError(
+                f"No time logged against project '{project}'"
+            )
+
+        by_employee = {
+            row["employee_name"]:
+                float(row["total_hours"])
+            for row in rows
+        }
+
+        return {
+            "project": project,
+            "total_hours": sum(
+                by_employee.values()
+            ),
+            "by_employee": by_employee,
+        }
+
+    finally:
+
+        cursor.close()
+        connection.close()
